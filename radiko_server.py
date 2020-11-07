@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 import socket
 import subprocess
+from subprocess import Popen, PIPE, DEVNULL
 
 
 PLAYER_URL = 'http://radiko.jp/apps/js/flash/myplayer-release.swf'
@@ -136,17 +137,23 @@ class RadikoServer(object):
 
         # パラメータ取り出し
         p = re.match(r'^(.*)://(.*?)/(.*)/(.*?)$', stream_url)
-        print(p[0])
-        print(p[1])
-        print(p[2])
-        print(p[3])
-        print('--------')
-        print(f'{p[1]}://{p[2]}')
-        print(f'{p[3]}')
-        print(f'{p[4]}')
+        serverurl = f'{p[1]}://{p[2]}'
+        app = p[3]
+        playpath = p[4]
+        proc1 = Popen(('rtmpdump', '-v',
+                       '-r', serverurl,
+                       '--app', app,
+                       '--playpath',  playpath,
+                       '-W', PLAYER_URL,
+                       '-C', 'S:""', '-C', 'S:""', '-C', 'S:""',
+                       '-C', f'S:{self.authtoken}',
+                       '--live'), stdout=PIPE)
+        proc2 = Popen(('mplayer', '-'), stdin=proc1.stdout, stdout=DEVNULL)
+        print('Done')
 
 
     def run(self):
+        self.play_radio('FMJ')
         print('Running...')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             # IPアドレスとポートを設定
