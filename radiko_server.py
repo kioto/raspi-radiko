@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import subprocess
 from subprocess import Popen, PIPE, DEVNULL
+import threading
 
 
 PLAYER_URL = 'http://radiko.jp/apps/js/flash/myplayer-release.swf'
@@ -23,6 +24,7 @@ class RadikoServer(object):
         if not OUTDIR.is_dir():
             OUTDIR.mkdir()
 
+        self.thread_player = None
         self.set_player()
         self.set_keydata()
         self.set_areaid()
@@ -117,6 +119,9 @@ class RadikoServer(object):
     def play_radio(self, ch):
         """ラジオを再生
         """
+        if self.thread_player:
+            self.stop_radio()
+
         # チャンネルファイルを取得
         channel_file = OUTDIR.joinpath(ch+'.xml')
         cmd = ('wget', '-q',
@@ -132,28 +137,41 @@ class RadikoServer(object):
                     stream_url = re.sub('^.*<item>', '', line)
                     stream_url = re.sub('</item.*$', '', stream_url)
                     break
-
         channel_file.unlink()
 
         # パラメータ取り出し
         p = re.match(r'^(.*)://(.*?)/(.*)/(.*?)$', stream_url)
-        serverurl = f'{p[1]}://{p[2]}'
-        app = p[3]
-        playpath = p[4]
-        proc1 = Popen(('rtmpdump', '-v',
-                       '-r', serverurl,
-                       '--app', app,
-                       '--playpath',  playpath,
-                       '-W', PLAYER_URL,
-                       '-C', 'S:""', '-C', 'S:""', '-C', 'S:""',
-                       '-C', f'S:{self.authtoken}',
-                       '--live'), stdout=PIPE)
-        proc2 = Popen(('mplayer', '-'), stdin=proc1.stdout, stdout=DEVNULL)
-        print('Done')
+        self.serverurl = f'{p[1]}://{p[2]}'
+        self.app = p[3]
+        self.playpath = p[4]
+        self.thread_player = threading.Thread(target=self.worker_play)
+        self.thread_player.setDaemon(True)
+        self.thread_player.start()
+        print('Play', ch)
 
+    def worker_play(self):
+        """ラジオを再生
+        """
+        self.proc1 = Popen(('rtmpdump', '-v',
+                            '-r', self.serverurl,
+                            '--app', self.app,
+                            '--playpath',  self.playpath,
+                            '-W', PLAYER_URL,
+                            '-C', 'S:""', '-C', 'S:""', '-C', 'S:""',
+                            '-C', f'S:{self.authtoken}',
+                            '--live'), stdout=PIPE)
+        self.proc2 = Popen(('mplayer', '-'), stdin=self.proc1.stdout,
+                           stdout=DEVNULL, stderr=DEVNULL)
+
+    def stop_radio(self):
+        """ラジオを止める
+        """
+        if self.thread_player:
+            self.proc1.kill()
+            self.proc2.kill()
+            self.thread_player = None
 
     def run(self):
-        self.play_radio('FMJ')
         print('Running...')
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             # IPアドレスとポートを設定
@@ -176,10 +194,16 @@ class RadikoServer(object):
                             send_msg = 'areaid=' + self.areaid
                             print('send:', send_msg)
                             conn.sendall(send_msg.encode())
-                        elif 'radio ' in resv_msg:
+                        elif 'play ' in resv_msg:
                             ch = re.sub(r'^.* ', '', resv_msg)
                             self.play_radio(ch)
                             conn.sendall(ch.encode())
+                        elif 'stop' == resv_msg:
+                            self.stop_radio()
+                            conn.sendall(ch.encode())
+                        elif 'off' == resv_msg:
+                            s.close()
+                            return
                         else:
                             conn.sendall(b'Unknown: ' + data)
 
